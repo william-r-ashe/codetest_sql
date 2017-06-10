@@ -46,13 +46,40 @@ values
 
 -- TODO 1. list living persons and all person_addresses associated with them on June 5, 2017
 
+-- "on June 5, 2017" seems to imply any address(es) they had on that day specifically:
+select p.id, p.name, a.address
+from person p
+  inner join person_address a
+    on a.person_id = p.id
+where p.deceased_date is null
+  and '2017-06-05'::date between a.from_dt and coalesce(a.thru_dt, now())
+order by p.id;
 
+-- but if "all person_addresses" meant every address that had up to that point:
+select p.id, p.name, a.address
+from person p
+  inner join person_address a
+    on a.person_id = p.id
+where p.deceased_date is null
+  and (a.thru_dt <= '2017-06-05'::date or a.thru_dt is null)
+order by p.id, a.from_dt;
 
 
 -- TODO 2. list top 3 person_address records per person order by longest duration
 -- (null thru_dt should be considered todays date, and should be included in consideration)
 
-
+select id, name, address, duration_in_days
+from (
+  select p.id, p.name, a.address,
+    row_number() over (partition by p.id order by
+          date_part('day', coalesce(a.thru_dt, now()) - a.from_dt) desc) as row,
+    date_part('day', coalesce(a.thru_dt, now()) - a.from_dt) as duration_in_days
+    from person p
+    inner join person_address a
+      on a.person_id = p.id
+) dur
+where row <= 3
+order by id, duration_in_days desc;
 
 
 -- Given a third table person_address_current (created below), intended to contain a non-deceased person's "current" address
@@ -80,7 +107,77 @@ insert into person_address_current (person_id, address, from_dt)
   where from_dt <= '2001-01-01'::date and (thru_dt >= '2001-01-01'::date or thru_dt is null);
 
 
+-- a. update/insert living person's address to be current as of June 5, 2017.
 
+update person_address_current c
+set address = a.address,
+  from_dt = a.from_dt
+from person p
+  inner join person_address a
+    on a.person_id = p.id
+where c.person_id = p.id
+  and p.deceased_date is null
+  and a.thru_dt is null
+
+  -- c. records that have not changed since 2001-01-01 should not change
+  and a.from_dt > '2001-01-01'::date
+  ;
+
+insert into person_address_current (person_id, address, from_dt)
+select p.id, a.address, a.from_dt
+from person p
+  inner join person_address a
+    on a.person_id = p.id
+  left outer join person_address_current c
+    on c.person_id = p.id
+    and c.address = a.address
+    and c.from_dt = a.from_dt
+where p.deceased_date is null
+  and a.thru_dt is null
+  and c.id is null;
+
+
+/*
+NOTE: Based on the description of the purpose of the table and the fact
+      that this code was committed on 6/5, I made the assumption that
+      "current as of June 5, 2017" was intended to mean bring the table
+      completely up to date. However, if the intention was to bring it forward
+      to June 5, 2017 and ignore any further changes after that, I would
+      accomplish that with the adjustment below:
+
+In both queries, replace:
+
+    and a.thru_dt is null
+
+with:
+
+    and (a.thru_dt >= '2017-06-05'::date or a.thru_dt is null)
+    and not exists (
+          select 1
+          from person_address earlier_changes
+          where earlier_changes.person_id = a.person_id
+            and (earlier_changes.thru_dt >= '2017-06-05'::date
+                  or earlier_changes.thru_dt is null)
+            and earlier_changes.thru_dt < coalesce(a.thru_dt, now())
+        )
+
+ */
+
+
+
+-- b. remove deceased persons from the table
+
+delete from person_address_current
+using person p
+where person_id = p.id
+  and p.deceased_date is not null;
+
+
+
+-- Pull all records in person_address_current to show final results
+select *
+from person_address_current
+order by id;
 
 
 commit;
